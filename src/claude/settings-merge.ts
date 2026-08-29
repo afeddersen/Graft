@@ -1,3 +1,5 @@
+import { isGraftEntry } from '../hosts/config-write.js';
+
 type Json = Record<string, any>;
 
 const SL_CMD = 'node "${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/graft-statusline.cjs"';
@@ -20,11 +22,14 @@ function graftBlocks(): Record<string, Json[]> {
   return {
     PostToolUse: [
       { matcher: 'Write|Edit|MultiEdit', hooks: [{ type: 'command', command: hookCmd('post-edit'), timeout: 10000 }] },
-      // A retrieval tool (CLI `graft …` via Bash, or the `graft_*` MCP tools) prints a
-      // `[graft] tokens saved ≈ N` footer; this hook sums it into the session total the
-      // statusline shows. Broad matcher, but the handler no-ops instantly unless a footer
-      // is actually present, so non-graft Bash calls cost only a stdin read.
-      { matcher: 'Bash|mcp__graft__', hooks: [{ type: 'command', command: hookCmd('tool-savings'), timeout: 8000 }] },
+      // Score the usage mix and sum token savings. A graft retrieval (CLI `graft …`
+      // via Bash, or the `graft_*` MCP tools) prints a `[graft] tokens saved ≈ N`
+      // footer this hook sums into the session total; the same hook classifies
+      // Read/Grep/Glob as source reads vs graft as graft reads, which is what feeds
+      // `graft stats` and the `session_summary` graft-vs-grep ratio. Broad matcher,
+      // but the handler no-ops instantly unless there is something to record, so an
+      // unrelated Bash or a plain Read costs only a stdin read.
+      { matcher: 'Bash|mcp__graft__|Read|Grep|Glob', hooks: [{ type: 'command', command: hookCmd('tool-savings'), timeout: 8000 }] },
     ],
     // Longer budget than the other hooks: its `graft ask` is a real query, and a
     // query now brings the graph up to date first (graph/refresh.ts) — usually
@@ -39,10 +44,6 @@ function graftBlocks(): Record<string, Json[]> {
     Stop: [{ hooks: [{ type: 'command', command: hookCmd('stop'), timeout: 8000 }] }],
   };
 }
-function isGraftHookEntry(entry: Json): boolean {
-  return JSON.stringify(entry ?? '').includes('graft-hooks.cjs');
-}
-
 /**
  * Is this allowlist entry one graft wrote?
  *
@@ -75,7 +76,7 @@ export function mergeGraftSettings(existing: Json): { merged: Json; warnings: st
   merged.hooks = { ...(merged.hooks ?? {}) };
   for (const [event, blocks] of Object.entries(graftBlocks())) {
     const prior = Array.isArray(merged.hooks[event]) ? merged.hooks[event] : [];
-    const foreign = prior.filter((e: Json) => !isGraftHookEntry(e)); // drop old Graft entries → idempotent
+    const foreign = prior.filter((e: Json) => !isGraftEntry(e)); // drop old Graft entries → idempotent
     merged.hooks[event] = [...foreign, ...blocks];
   }
 
